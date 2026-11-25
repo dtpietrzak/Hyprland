@@ -4,6 +4,7 @@
 #include "../../desktop/view/window/WindowPresentation.hpp"
 
 #include "../LayoutManager.hpp"
+#include "../algorithm/floating/default/DefaultFloatingAlgorithm.hpp"
 #include "../space/Space.hpp"
 #include "../target/WindowTarget.hpp"
 
@@ -26,6 +27,49 @@ using namespace Layout::Supplementary;
 
 static bool isResizeMode(eMouseBindMode mode) {
     return mode == MBIND_RESIZE || mode == MBIND_RESIZE_FORCE_RATIO || mode == MBIND_RESIZE_BLOCK_RATIO;
+}
+
+// floating work area of the monitor closest to a point, for misc:float_force_onscreen while dragging
+static std::optional<CBox> floatingWorkAreaAt(const Vector2D& point) {
+    const auto PMONITOR = State::monitorState()->query().vec(point).run();
+    if (!PMONITOR || !PMONITOR->m_activeWorkspace)
+        return std::nullopt;
+
+    const auto WS = PMONITOR->m_activeSpecialWorkspace ? PMONITOR->m_activeSpecialWorkspace : PMONITOR->m_activeWorkspace;
+    if (!WS->space())
+        return std::nullopt;
+
+    return WS->space()->workArea(true);
+}
+
+// Limit the edges a floating resize moves to the work area, without moving the window or
+// shrinking it below its size when the drag began.
+static void fitResizeInWorkArea(Vector2D& pos, Vector2D& size, SP<ITarget> target, const CBox& workArea, eRectCorner corner, const Vector2D& beginSize, const Vector2D& minSize,
+                                const Vector2D& maxSize, bool keepRatio) {
+    const auto EXTENTS = target->window() ? target->window()->getWindowExtentsUnified(Desktop::View::RESERVED_EXTENTS | Desktop::View::INPUT_EXTENTS) : SBoxExtents{};
+
+    const auto RIGHT  = pos.x + size.x;
+    const auto BOTTOM = pos.y + size.y;
+
+    // the largest size each axis can grow to with its moving edge inside the work area
+    const double MAXW = edgeLeft(corner) ? RIGHT - (workArea.x + EXTENTS.topLeft.x) : workArea.x + workArea.w - EXTENTS.bottomRight.x - pos.x;
+    const double MAXH = edgeTop(corner) ? BOTTOM - (workArea.y + EXTENTS.topLeft.y) : workArea.y + workArea.h - EXTENTS.bottomRight.y - pos.y;
+
+    const double LIMITW = std::max(MAXW, std::min(size.x, beginSize.x));
+    const double LIMITH = std::max(MAXH, std::min(size.y, beginSize.y));
+
+    if (keepRatio) {
+        const double SCALE = std::min({1.0, size.x > 0 ? LIMITW / size.x : 1.0, size.y > 0 ? LIMITH / size.y : 1.0});
+        size               = size * SCALE;
+    } else
+        size = {std::min(size.x, LIMITW), std::min(size.y, LIMITH)};
+
+    size = size.clamp(minSize, maxSize);
+
+    if (edgeLeft(corner))
+        pos.x = RIGHT - size.x;
+    if (edgeTop(corner))
+        pos.y = BOTTOM - size.y;
 }
 
 static std::string_view cursorForResizeEdge(eRectCorner edge) {
@@ -379,7 +423,8 @@ void CDragStateController::mouseMove(const Vector2D& mousePos) {
     const auto  DELTA     = Vector2D(mousePos.x - m_beginDragXY.x, mousePos.y - m_beginDragXY.y);
     const auto  TICKDELTA = Vector2D(mousePos.x - m_lastDragXY.x, mousePos.y - m_lastDragXY.y);
 
-    static auto SNAPENABLED = CConfigValue<Config::BOOL>("general:snap:enabled");
+    static auto SNAPENABLED    = CConfigValue<Config::BOOL>("general:snap:enabled");
+    static auto PFORCEONSCREEN = CConfigValue<Config::INTEGER>("misc:float_force_onscreen");
 
     const auto  TIMERDELTA    = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - TIMER).count();
     const auto  MSDELTA       = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - MSTIMER).count();
@@ -423,6 +468,12 @@ void CDragStateController::mouseMove(const Vector2D& mousePos) {
 
         if (*SNAPENABLED && !m_draggingTiled)
             g_layoutManager->performSnap(newPos, newSize, DRAGGINGTARGET, MBIND_MOVE, -1, m_beginDragSizeXY);
+
+        // keep the window within the monitor under the pointer, so it can still be dragged across monitors
+        if ((*PFORCEONSCREEN == 1 || *PFORCEONSCREEN == 2) && !m_draggingTiled && DRAGGINGTARGET->floating()) {
+            if (const auto WORK_AREA = floatingWorkAreaAt(mousePos); WORK_AREA)
+                newPos = Floating::CDefaultFloatingAlgorithm::fitBoxInWorkArea({newPos, newSize}, DRAGGINGTARGET, *WORK_AREA, *PFORCEONSCREEN == 2).pos();
+        }
 
         newPos = newPos.round();
 
@@ -481,6 +532,12 @@ void CDragStateController::mouseMove(const Vector2D& mousePos) {
             if (*SNAPENABLED) {
                 g_layoutManager->performSnap(newPos, newSize, DRAGGINGTARGET, mode, m_grabbedCorner, m_beginDragSizeXY);
                 newSize = newSize.clamp(MINSIZE, MAXSIZE);
+            }
+
+            // a resize can't take a window fully offscreen, so only the fully-onscreen mode limits it
+            if (*PFORCEONSCREEN == 2 && DRAGGINGTARGET->space()) {
+                fitResizeInWorkArea(newPos, newSize, DRAGGINGTARGET, DRAGGINGTARGET->space()->workArea(true), m_grabbedCorner, m_beginDragSizeXY, MINSIZE, MAXSIZE,
+                                    mode == MBIND_RESIZE_FORCE_RATIO);
             }
 
             CBox wb = {newPos, newSize};

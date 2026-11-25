@@ -28,6 +28,9 @@ namespace Layout::Floating {
 
         virtual void recenter(SP<ITarget> t);
 
+        // fit a box into a given work area, following misc:float_force_onscreen's partial (fully = false) or full rules
+        static CBox fitBoxInWorkArea(const CBox& box, SP<ITarget> t, const CBox& workArea, bool fully);
+
       private:
         CBox fitBoxInWorkArea(const CBox& box, SP<ITarget> t, bool fully = true);
 

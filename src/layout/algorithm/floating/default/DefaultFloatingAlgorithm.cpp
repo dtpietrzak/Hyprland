@@ -177,7 +177,10 @@ void CDefaultFloatingAlgorithm::movedTarget(SP<ITarget> target, std::optional<Ve
 }
 
 CBox CDefaultFloatingAlgorithm::fitBoxInWorkArea(const CBox& box, SP<ITarget> t, bool fully) {
-    const auto WORK_AREA = m_parent->space()->workArea(true);
+    return fitBoxInWorkArea(box, t, m_parent->space()->workArea(true), fully);
+}
+
+CBox CDefaultFloatingAlgorithm::fitBoxInWorkArea(const CBox& box, SP<ITarget> t, const CBox& WORK_AREA, bool fully) {
     const auto EXTENTS   = t->window() ? t->window()->getWindowExtentsUnified(Desktop::View::RESERVED_EXTENTS | Desktop::View::INPUT_EXTENTS) : SBoxExtents{};
     CBox       targetBox = box.copy().addExtents(EXTENTS);
 
